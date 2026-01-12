@@ -2,7 +2,7 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  Home, BookOpen, Play, BarChart3, Settings as SettingsIcon, GraduationCap, Menu, X
+  Home, BookOpen, Play, BarChart3, Settings as SettingsIcon, GraduationCap, Menu
 } from "lucide-react";
 import { useStudyStore } from "./hooks/useStudyStore";
 import TodayTab from "./components/study/TodayTab";
@@ -22,7 +22,7 @@ const App = () => {
 
   const navItems = [
     { id: "inicio", label: "Início", icon: Home },
-    { id: "materias", label: "Matérias", icon: BookOpen },
+    { id: "materias", label: "Assuntos", icon: BookOpen },
     { id: "timer", label: "Estudar", icon: Play },
     { id: "analise", label: "Relatórios", icon: BarChart3 },
     { id: "ajustes", label: "Ajustes", icon: SettingsIcon },
@@ -57,7 +57,7 @@ const App = () => {
 
       <div className="mt-auto pt-6 border-t border-zinc-50">
         <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest text-center">
-          Foco & Consistência
+          Foco & Produtividade
         </p>
       </div>
     </div>
@@ -99,7 +99,7 @@ const App = () => {
             <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setIsMobileMenuOpen(true)}>
               <Menu className="w-6 h-6" />
             </Button>
-            <h2 className="font-bold text-zinc-900 capitalize">{tab}</h2>
+            <h2 className="font-bold text-zinc-900 capitalize">{tab === 'inicio' ? 'Dashboard' : tab}</h2>
           </div>
           <div className="text-sm font-medium text-zinc-500">
             {settings.userName}

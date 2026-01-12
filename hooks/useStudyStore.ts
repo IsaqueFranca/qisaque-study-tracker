@@ -4,42 +4,41 @@ import { persist } from 'zustand/middleware';
 import { Subject, Session, Settings, Month, SubjectSchedule } from '../types';
 import { generateId, formatDate, calculateStreaks } from '../lib/utils';
 
-// Unified StudyState to fix missing properties and actions identified in errors
+// Define the state and actions for the study store
 interface StudyState {
+  months: Month[];
   subjects: Subject[];
   sessions: Session[];
-  months: Month[];
-  activeScheduleMonths: string[];
   settings: Settings;
-  isGuest: boolean;
+  activeScheduleMonths: string[];
+  guestMode?: boolean;
   
   // Month Actions
   addMonth: (name: string, year: number) => void;
   editMonth: (id: string, name: string) => void;
   deleteMonth: (id: string) => void;
   duplicateMonth: (id: string) => void;
-  
+  addActiveScheduleMonth: (monthId: string) => void;
+  removeActiveScheduleMonth: (monthId: string) => void;
+
   // Subject Actions
+  // Updated addSubject to accept an optional monthId
   addSubject: (title: string, monthId?: string) => void;
   deleteSubject: (id: string) => void;
+  toggleSubjectInMonth: (subjectId: string, monthId: string) => void;
+  updateSubjectSchedule: (subjectId: string, monthId: string, updates: Partial<SubjectSchedule>) => void;
+  toggleSubjectPlannedDay: (subjectId: string, monthId: string, dateStr: string) => void;
   toggleSubtopic: (subjectId: string, subtopicId: string) => void;
   
   // Session Actions
   addSession: (data: string | Partial<Session>, duration?: number, date?: string) => void;
   deleteSession: (id: string) => void;
-  updateSessionStatus: (id: string, status: 'completed' | 'incomplete') => void;
+  updateSessionStatus: (sessionId: string, status: 'completed' | 'incomplete') => void;
   
-  // Settings & Auth Actions
+  // Settings Actions
   updateSettings: (updates: Partial<Settings>) => void;
+  setGuestMode: (isGuest: boolean) => void;
   loadFromCloud: (uid: string) => Promise<void>;
-  setGuestMode: (mode: boolean) => void;
-
-  // Schedule Actions
-  addActiveScheduleMonth: (month: string) => void;
-  removeActiveScheduleMonth: (month: string) => void;
-  toggleSubjectInMonth: (subjectId: string, monthId: string) => void;
-  updateSubjectSchedule: (subjectId: string, monthId: string, updates: Partial<SubjectSchedule>) => void;
-  toggleSubjectPlannedDay: (subjectId: string, monthId: string, dateStr: string) => void;
 
   // Selectors
   getTotalHoursBySubject: (subjectId: string) => number;
@@ -51,11 +50,10 @@ interface StudyState {
 export const useStudyStore = create<StudyState>()(
   persist(
     (set, get) => ({
+      months: [],
       subjects: [],
       sessions: [],
-      months: [],
       activeScheduleMonths: [],
-      isGuest: false,
       settings: {
         pomodoroDuration: 25,
         userName: 'Estudante',
@@ -63,7 +61,6 @@ export const useStudyStore = create<StudyState>()(
         monthlyGoalHours: 40,
       },
 
-      // Month Actions
       addMonth: (name, year) => set((state) => ({
         months: [...state.months, { id: generateId(), name, year }]
       })),
@@ -78,33 +75,38 @@ export const useStudyStore = create<StudyState>()(
       })),
 
       duplicateMonth: (id) => set((state) => {
-        const monthToDup = state.months.find(m => m.id === id);
-        if (!monthToDup) return state;
-        const newMonthId = generateId();
-        const newMonth = { ...monthToDup, id: newMonthId, name: `${monthToDup.name} (Cópia)` };
-        
-        const subjectsToDup = state.subjects.filter(s => s.monthId === id);
-        const newSubjects = subjectsToDup.map(s => ({
+        const month = state.months.find(m => m.id === id);
+        if (!month) return state;
+        const newId = generateId();
+        const newMonth = { ...month, id: newId, name: `${month.name} (Cópia)` };
+        const subjectsToCopy = state.subjects.filter(s => s.monthId === id);
+        const newSubjects = subjectsToCopy.map(s => ({
           ...s,
           id: generateId(),
-          monthId: newMonthId,
+          monthId: newId,
           createdAt: Date.now()
         }));
-        
         return {
           months: [...state.months, newMonth],
           subjects: [...state.subjects, ...newSubjects]
         };
       }),
 
-      // Subject Actions
+      addActiveScheduleMonth: (monthId) => set((state) => ({
+        activeScheduleMonths: Array.from(new Set([...state.activeScheduleMonths, monthId]))
+      })),
+
+      removeActiveScheduleMonth: (monthId) => set((state) => ({
+        activeScheduleMonths: state.activeScheduleMonths.filter(m => m !== monthId)
+      })),
+
       addSubject: (title, monthId) => set((state) => ({
         subjects: [...state.subjects, {
           id: generateId(),
           title,
           color: `hsl(${Math.random() * 360}, 70%, 50%)`,
           createdAt: Date.now(),
-          monthId: monthId || undefined,
+          monthId: monthId,
           subtopics: [],
           schedules: {}
         }]
@@ -115,18 +117,71 @@ export const useStudyStore = create<StudyState>()(
         sessions: state.sessions.filter(sess => sess.subjectId !== id)
       })),
 
-      toggleSubtopic: (subjectId, subtopicId) => set((state) => ({
-        subjects: state.subjects.map(s => {
-          if (s.id !== subjectId) return s;
-          return {
-            ...s,
-            subtopics: s.subtopics.map(st => st.id === subtopicId ? { ...st, isCompleted: !st.isCompleted } : st)
-          };
-        })
-      })),
+      toggleSubjectInMonth: (subjectId, monthId) => set((state) => {
+        const newSubjects = state.subjects.map(s => {
+          if (s.id === subjectId) {
+            const schedules = { ...(s.schedules || {}) };
+            if (schedules[monthId]) {
+              delete schedules[monthId];
+            } else {
+              schedules[monthId] = { plannedDays: [], monthlyGoal: 0 };
+            }
+            return { ...s, schedules };
+          }
+          return s;
+        });
+        return { subjects: newSubjects };
+      }),
 
-      // Session Actions
-      // Updated to handle both (subjectId, duration, date) and an object as seen in ScheduleTab
+      updateSubjectSchedule: (subjectId, monthId, updates) => set((state) => {
+        const newSubjects = state.subjects.map(s => {
+          if (s.id === subjectId) {
+            const schedules = { ...(s.schedules || {}) };
+            schedules[monthId] = { ...(schedules[monthId] || {}), ...updates };
+            return { ...s, schedules };
+          }
+          return s;
+        });
+        return { subjects: newSubjects };
+      }),
+
+      toggleSubjectPlannedDay: (subjectId, monthId, dateStr) => set((state) => {
+        const newSubjects = state.subjects.map(s => {
+          if (s.id === subjectId) {
+            const schedules = { ...(s.schedules || {}) };
+            const currentSched = schedules[monthId] || { plannedDays: [] };
+            const plannedDays = [...(currentSched.plannedDays || [])];
+            
+            const index = plannedDays.indexOf(dateStr);
+            if (index > -1) {
+              plannedDays.splice(index, 1);
+            } else {
+              plannedDays.push(dateStr);
+            }
+            
+            schedules[monthId] = { ...currentSched, plannedDays };
+            return { ...s, schedules };
+          }
+          return s;
+        });
+        return { subjects: newSubjects };
+      }),
+
+      toggleSubtopic: (subjectId, subtopicId) => set((state) => {
+        const newSubjects = state.subjects.map(s => {
+          if (s.id === subjectId) {
+            return {
+              ...s,
+              subtopics: s.subtopics.map(st => 
+                st.id === subtopicId ? { ...st, isCompleted: !st.isCompleted } : st
+              )
+            };
+          }
+          return s;
+        });
+        return { subjects: newSubjects };
+      }),
+
       addSession: (data, duration, date) => set((state) => {
         let newSession: Session;
         if (typeof data === 'string') {
@@ -155,70 +210,20 @@ export const useStudyStore = create<StudyState>()(
         sessions: state.sessions.filter(s => s.id !== id)
       })),
 
-      updateSessionStatus: (id, status) => set((state) => ({
-        sessions: state.sessions.map(s => s.id === id ? { ...s, status } : s)
+      updateSessionStatus: (sessionId, status) => set((state) => ({
+        sessions: state.sessions.map(s => s.id === sessionId ? { ...s, status } : s)
       })),
 
-      // Settings & Auth Actions
       updateSettings: (updates) => set((state) => ({
         settings: { ...state.settings, ...updates }
       })),
 
+      setGuestMode: (isGuest) => set({ guestMode: isGuest }),
+
       loadFromCloud: async (uid) => {
-        // Mocking cloud load since Firebase is removed but component expects it
-        console.log("Loading data for user:", uid);
+        console.log('Stub: loadFromCloud for uid:', uid);
       },
 
-      setGuestMode: (isGuest) => set({ isGuest }),
-
-      // Schedule Actions
-      addActiveScheduleMonth: (month) => set((state) => ({
-        activeScheduleMonths: [...new Set([...state.activeScheduleMonths, month])]
-      })),
-
-      removeActiveScheduleMonth: (month) => set((state) => ({
-        activeScheduleMonths: state.activeScheduleMonths.filter(m => m !== month)
-      })),
-
-      toggleSubjectInMonth: (subjectId, monthId) => set((state) => ({
-        subjects: state.subjects.map(s => {
-          if (s.id !== subjectId) return s;
-          const schedules = { ...s.schedules };
-          if (schedules[monthId]) {
-            delete schedules[monthId];
-          } else {
-            schedules[monthId] = { plannedDays: [], monthlyGoal: 0 };
-          }
-          return { ...s, schedules };
-        })
-      })),
-
-      updateSubjectSchedule: (subjectId, monthId, updates) => set((state) => ({
-        subjects: state.subjects.map(s => {
-          if (s.id !== subjectId) return s;
-          const schedules = { ...s.schedules };
-          schedules[monthId] = { ...(schedules[monthId] || {}), ...updates };
-          return { ...s, schedules };
-        })
-      })),
-
-      toggleSubjectPlannedDay: (subjectId, monthId, dateStr) => set((state) => ({
-        subjects: state.subjects.map(s => {
-          if (s.id !== subjectId) return s;
-          const schedules = { ...s.schedules };
-          const schedule = schedules[monthId] || { plannedDays: [], monthlyGoal: 0 };
-          const plannedDays = [...(schedule.plannedDays || [])];
-          
-          if (plannedDays.includes(dateStr)) {
-            schedules[monthId] = { ...schedule, plannedDays: plannedDays.filter(d => d !== dateStr) };
-          } else {
-            schedules[monthId] = { ...schedule, plannedDays: [...plannedDays, dateStr] };
-          }
-          return { ...s, schedules };
-        })
-      })),
-
-      // Selectors
       getTotalHoursBySubject: (subjectId) => {
         const totalSeconds = get().sessions
           .filter(s => s.subjectId === subjectId && s.status === 'completed')
@@ -235,11 +240,12 @@ export const useStudyStore = create<StudyState>()(
       },
 
       getStreakStats: () => {
-        return calculateStreaks(get().sessions);
+        const { sessions } = get();
+        return calculateStreaks(sessions);
       }
     }),
     {
-      name: 'qisaque-storage'
+      name: 'qisaque-hours-tracker'
     }
   )
 );
